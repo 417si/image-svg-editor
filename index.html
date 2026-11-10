@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="写真をシルクスクリーン用の網点SVGに変換。擦れ・色収差・グリッチ対応。">
+<title>白版 網点メーカー</title>
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: 左に大きな版プレビュー（Tシャツ色の上にインク）、右に工程順の操作パネル。狭い画面では縦積み。 */
+:root{
+  --bg:#e9ebee; --panel:#f7f8f9; --fg:#16181c; --muted:#5b616b; --line:#cfd3d9;
+  --accent:#2a4bd6; --accent-fg:#ffffff; --track:#d5d9df; --warn:#a4570a;
+  --f-display:"Big Shoulders Display","Arial Narrow",Impact,sans-serif;
+  --f-body:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#101215; --panel:#191c21; --fg:#e8eaee; --muted:#9aa1ad; --line:#2d323a;
+  --accent:#7d97ff; --accent-fg:#0d1020; --track:#323843; --warn:#f0a24a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#101215; --panel:#191c21; --fg:#e8eaee; --muted:#9aa1ad; --line:#2d323a;
+  --accent:#7d97ff; --accent-fg:#0d1020; --track:#323843; --warn:#f0a24a; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+.wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 24px}
+h1{margin:0;font-weight:900;font-size:26px;letter-spacing:.02em;text-wrap:balance;display:flex;align-items:baseline;gap:10px}
+h1 .latin{font-family:var(--f-display);font-size:30px;letter-spacing:.04em;color:var(--accent)}
+header p{margin:0;color:var(--muted);max-width:60ch}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+@media (max-width:880px){.main{grid-template-columns:minmax(0,1fr)}}
+
+.stage{position:sticky;top:calc(env(safe-area-inset-top,0px) + 12px);display:flex;flex-direction:column;gap:10px;min-width:0}
+@media (max-width:880px){.stage{position:static}}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg button{appearance:none;border:0;background:transparent;color:var(--fg);font:inherit;font-size:13px;padding:6px 12px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);font-weight:700}
+.seg button:focus-visible,.btn:focus-visible,.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.viewport{position:relative;border-radius:10px;overflow:auto;max-height:78vh;background:var(--shirt,#141414);
+  border:1px solid var(--line);display:grid;place-items:center;min-height:320px;transition:outline-color .15s}
+.viewport.drag{outline:3px dashed var(--accent);outline-offset:-8px}
+.viewport canvas{display:block;margin:24px}
+.badge{position:absolute;left:12px;top:12px;font-size:12px;padding:3px 9px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;
+  backdrop-filter:blur(4px);pointer-events:none}
+.stats{font-family:var(--f-mono);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 16px;font-variant-numeric:tabular-nums}
+.stats b{color:var(--fg);font-weight:600}
+.stats .warn{color:var(--warn)}
+.stats .ink{display:inline-block;width:9px;height:9px;border-radius:50%;border:1px solid var(--line);margin-right:4px;vertical-align:0}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column}
+.group{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.group+.group{border-top:1px solid var(--line)}
+.group h2{margin:0;font-size:12px;font-weight:700;letter-spacing:.12em;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+.group h2 .step{font-family:var(--f-display);font-size:15px;letter-spacing:.06em;color:var(--accent);margin-right:8px}
+.group[data-off="true"] .dep{opacity:.5}
+.dep{display:flex;flex-direction:column;gap:12px}
+
+.ctl{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center}
+.ctl label{font-size:13px}
+.ctl output{font-family:var(--f-mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent);margin:2px 0 0}
+.hint{font-size:12px;color:var(--muted);margin:-6px 0 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{appearance:none;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit;font-size:12px;padding:3px 10px;border-radius:99px;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);font-weight:700}
+.swatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--line);cursor:pointer;padding:0}
+.swatch[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px var(--panel) inset}
+.check{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.check input{accent-color:var(--accent);width:16px;height:16px;flex:none}
+.switch{font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--fg);display:flex;align-items:center;gap:6px;cursor:pointer}
+.switch input{accent-color:var(--accent);width:16px;height:16px}
+
+.plates{display:flex;flex-direction:column;gap:6px}
+.plate{display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center;font-size:13px;
+  padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.plate input[type=color]{width:28px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:none;cursor:pointer}
+.plate select{font:inherit;font-size:12px;padding:3px 4px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg)}
+.plate .nm{min-width:0}
+.plate .nm small{display:block;color:var(--muted);font-size:11px;line-height:1.3}
+
+.btn{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;font-size:14px;font-weight:700;
+  padding:9px 14px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.btn.wide{width:100%}
+.file{position:relative}
+.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.toast{font-size:12px;min-height:1.4em;color:var(--muted)}
+.btnrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+input[type=number]{font:inherit;font-family:var(--f-mono);font-size:13px;width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header>
+    <h1><span class="latin">HALFTONE</span>白版 網点メーカー</h1>
+    <p>写真を網点に変換して、シルク版用のSVGで書き出します。擦れ・色収差・グリッチも版データのまま作れます。画像はブラウザ内だけで処理され、外部には送られません。</p>
+  </header>
+
+  <div class="main">
+    <section class="stage" aria-label="プレビュー">
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="表示">
+          <button type="button" id="v-ht" aria-pressed="true">網点</button>
+          <button type="button" id="v-gray" aria-pressed="false">調整後</button>
+          <button type="button" id="v-src" aria-pressed="false">元画像</button>
+        </div>
+        <div class="seg" role="group" aria-label="拡大">
+          <button type="button" id="z1" aria-pressed="true">全体</button>
+          <button type="button" id="z2" aria-pressed="false">2×</button>
+          <button type="button" id="z4" aria-pressed="false">4×</button>
+        </div>
+      </div>
+      <div class="viewport" id="viewport">
+        <span class="badge" id="badge">サンプル画像</span>
+        <canvas id="view" aria-label="網点プレビュー"></canvas>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+
+    <aside class="panel" aria-label="設定">
+      <div class="group">
+        <h2><span><span class="step">01</span>画像</span></h2>
+        <label class="btn primary wide file">画像を選ぶ<input type="file" id="file" accept="image/*"></label>
+        <p class="hint" style="margin:0">プレビューにドラッグ＆ドロップ、または貼り付け（Ctrl/⌘+V）でも読み込めます。</p>
+      </div>
+
+      <div class="group">
+        <h2><span><span class="step">02</span>トーン調整</span><button type="button" class="chip" id="reset-tone">リセット</button></h2>
+        <div class="ctl"><label for="brightness">明るさ</label><output id="o-brightness"></output><input type="range" id="brightness" min="-100" max="100" step="1"></div>
+        <div class="ctl"><label for="contrast">コントラスト</label><output id="o-contrast"></output><input type="range" id="contrast" min="-100" max="100" step="1"></div>
+        <div class="ctl"><label for="gamma">ガンマ（中間調）</label><output id="o-gamma"></output><input type="range" id="gamma" min="0.3" max="3" step="0.05"></div>
+        <div class="ctl"><label for="blackPt">黒点（これより暗い所はインクなし）</label><output id="o-blackPt"></output><input type="range" id="blackPt" min="0" max="90" step="1"></div>
+        <div class="ctl"><label for="whitePt">白点（これより明るい所はベタ）</label><output id="o-whitePt"></output><input type="range" id="whitePt" min="10" max="100" step="1"></div>
+        <div class="ctl"><label for="blur">ぼかし（網点をなめらかに）</label><output id="o-blur"></output><input type="range" id="blur" min="0" max="6" step="0.5"></div>
+        <label class="check"><input type="checkbox" id="invert">反転（暗い部分にインクを乗せる）</label>
+      </div>
+
+      <div class="group">
+        <h2><span><span class="step">03</span>網点</span></h2>
+        <div class="row" role="group" aria-label="網点の形">
+          <button type="button" class="chip" data-shape="circle">丸</button>
+          <button type="button" class="chip" data-shape="square">角</button>
+          <button type="button" class="chip" data-shape="diamond">ひし形</button>
+          <button type="button" class="chip" data-shape="line">線</button>
+        </div>
+        <div class="ctl"><label for="lpi">線数（lpi）</label><output id="o-lpi"></output><input type="range" id="lpi" min="8" max="65" step="1"></div>
+        <div class="row" role="group" aria-label="線数プリセット">
+          <button type="button" class="chip" data-lpi="20">粗め 20</button>
+          <button type="button" class="chip" data-lpi="30">標準 30</button>
+          <button type="button" class="chip" data-lpi="45">細かめ 45</button>
+        </div>
+        <p class="hint">Tシャツのシルクは25〜45線が目安。細かいほど写真らしく、粗いほどグラフィック的になります。</p>
+        <div class="ctl"><label for="angle">角度</label><output id="o-angle"></output><input type="range" id="angle" min="0" max="90" step="0.5"></div>
+        <div class="ctl"><label for="minDot">最小網点（これより小さい点は消す）</label><output id="o-minDot"></output><input type="range" id="minDot" min="0" max="1.5" step="0.05"></div>
+        <p class="hint">0.3mm未満の点は版に残りにくく、刷っても飛びやすいです。</p>
+      </div>
+
+      <div class="group">
+        <h2><span><span class="step">04</span>擦れ・かすれ</span><button type="button" class="chip" id="reset-distress">リセット</button></h2>
+        <div class="ctl"><label for="distress">かすれ量</label><output id="o-distress"></output><input type="range" id="distress" min="0" max="100" step="1"></div>
+        <div class="ctl"><label for="dScale">かすれの大きさ</label><output id="o-dScale"></output><input type="range" id="dScale" min="2" max="80" step="1"></div>
+        <div class="ctl"><label for="stretch">横方向の伸び（擦れの流れ）</label><output id="o-stretch"></output><input type="range" id="stretch" min="1" max="12" step="0.5"></div>
+        <div class="ctl"><label for="grain">ざらつき</label><output id="o-grain"></output><input type="range" id="grain" min="0" max="100" step="1"></div>
+        <div class="ctl"><label for="dropout">点の欠け</label><output id="o-dropout"></output><input type="range" id="dropout" min="0" max="40" step="1"></div>
+        <div class="ctl"><label for="jitter">位置のゆらぎ</label><output id="o-jitter"></output><input type="range" id="jitter" min="0" max="60" step="1"></div>
+        <div class="row"><button type="button" class="chip" id="reseed">パターンを変える</button><span class="hint" style="margin:0" id="seedlabel"></span></div>
+      </div>
+
+      <div class="group" id="g-ca">
+        <h2><span><span class="step">05</span>色収差</span><label class="switch"><input type="checkbox" id="caOn">使う</label></h2>
+        <div class="dep">
+          <p class="hint" style="margin:0">画像のR・G・Bを別々の版に分けて、少しずつずらします。版ごとに網点の角度も変えています。</p>
+          <div class="plates" id="plates"></div>
+          <div class="row" role="group" aria-label="色収差プリセット">
+            <button type="button" class="chip" data-ca="rc">赤＋シアン</button>
+            <button type="button" class="chip" data-ca="cmy">CMY</button>
+            <button type="button" class="chip" data-ca="white">白だけ（1版）</button>
+          </div>
+          <div class="ctl"><label for="caAmt">ずれ量</label><output id="o-caAmt"></output><input type="range" id="caAmt" min="0" max="12" step="0.1"></div>
+          <div class="ctl"><label for="caDir">ずれの方向</label><output id="o-caDir"></output><input type="range" id="caDir" min="0" max="180" step="1"></div>
+          <label class="check"><input type="checkbox" id="caRadial">レンズ風（外側ほど大きくずれる）</label>
+          <label class="check"><input type="checkbox" id="caWhite">全部白インクにする（1版にまとめる）</label>
+        </div>
+      </div>
+
+      <div class="group" id="g-gl">
+        <h2><span><span class="step">06</span>グリッチ</span><label class="switch"><input type="checkbox" id="glOn">使う</label></h2>
+        <div class="dep">
+          <div class="ctl"><label for="gAmt">スライスずれ（横帯がずれる割合）</label><output id="o-gAmt"></output><input type="range" id="gAmt" min="0" max="100" step="1"></div>
+          <div class="ctl"><label for="gShift">ずれ幅</label><output id="o-gShift"></output><input type="range" id="gShift" min="0" max="60" step="0.5"></div>
+          <div class="ctl"><label for="gSlice">帯の高さ</label><output id="o-gSlice"></output><input type="range" id="gSlice" min="1" max="40" step="0.5"></div>
+          <div class="ctl"><label for="gBlock">ブロックノイズ</label><output id="o-gBlock"></output><input type="range" id="gBlock" min="0" max="60" step="1"></div>
+          <div class="ctl"><label for="gSmear">引き伸ばし（画素が横に流れる）</label><output id="o-gSmear"></output><input type="range" id="gSmear" min="0" max="60" step="1"></div>
+          <div class="ctl"><label for="gScan">走査線（抜ける幅）</label><output id="o-gScan"></output><input type="range" id="gScan" min="0" max="80" step="1"></div>
+          <div class="ctl"><label for="gScanP">走査線の間隔</label><output id="o-gScanP"></output><input type="range" id="gScanP" min="0.5" max="12" step="0.1"></div>
+          <label class="check"><input type="checkbox" id="gPerLayer">版ごとに別々にずらす（色収差と組み合わせ）</label>
+          <div class="row"><button type="button" class="chip" id="gReseed">グリッチを変える</button><span class="hint" style="margin:0" id="gseedlabel"></span></div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2><span><span class="step">07</span>サイズと書き出し</span></h2>
+        <div class="row"><label for="widthMm" style="font-size:13px">プリント幅</label><input type="number" id="widthMm" min="20" max="500" step="1"><span class="hint" style="margin:0">mm（高さは比率で自動）</span></div>
+        <div class="row" role="group" aria-label="プリント幅プリセット">
+          <button type="button" class="chip" data-w="100">胸 100</button>
+          <button type="button" class="chip" data-w="250">A4幅 250</button>
+          <button type="button" class="chip" data-w="280">背中 280</button>
+          <button type="button" class="chip" data-w="310">特大 310</button>
+        </div>
+        <div class="row" role="group" aria-label="Tシャツの色" id="shirts">
+          <span style="font-size:13px">ボディ色</span>
+        </div>
+        <div class="btnrow">
+          <button type="button" class="btn primary" id="save">SVGを保存</button>
+          <button type="button" class="btn" id="copy">SVGをコピー</button>
+        </div>
+        <button type="button" class="btn wide" id="savePlates" hidden>版ごとに分けて保存</button>
+        <div class="toast" id="toast" role="status"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+const PRESETS={
+  rc:[{on:true,color:'#ffffff',src:'luma'},{on:true,color:'#ff2d55',src:'r'},{on:true,color:'#19c8ff',src:'b'}],
+  cmy:[{on:true,color:'#ffe600',src:'g'},{on:true,color:'#ff2aa8',src:'r'},{on:true,color:'#00c2ff',src:'b'}],
+  white:[{on:true,color:'#ffffff',src:'luma'},{on:true,color:'#ffffff',src:'r'},{on:true,color:'#ffffff',src:'b'}]
+};
+const DEFAULTS = {brightness:0,contrast:10,gamma:1,blackPt:8,whitePt:92,blur:1,invert:false,
+  shape:'circle',lpi:30,angle:22.5,minDot:0.3,
+  distress:18,dScale:14,stretch:3,grain:20,dropout:4,jitter:6,seed:7,
+  caOn:false,caAmt:2.5,caDir:0,caRadial:false,caWhite:false,plates:PRESETS.rc,
+  glOn:false,gAmt:25,gShift:12,gSlice:6,gBlock:8,gSmear:10,gScan:0,gScanP:3,gPerLayer:true,gSeed:3,
+  widthMm:280,shirt:'#141414'};
+const SHIRTS=[['#141414','ブラック'],['#1f2a44','ネイビー'],['#4a4f55','チャコール'],['#7a1f2b','バーガンディ'],['#2f4a33','フォレスト'],['#e9e6df','ホワイト']];
+const SRC_LABEL={luma:'明るさ',r:'R（赤）',g:'G（緑）',b:'B（青）'};
+const PLATE_NAME=['メイン','ずれ −','ずれ ＋'];
+let S = {...DEFAULTS};
+try{ const saved = JSON.parse(localStorage.getItem('ht-settings')||'null'); if(saved) S = {...DEFAULTS,...saved}; }catch(e){}
+S.plates = (S.plates||PRESETS.rc).map((p,i)=>({...PRESETS.rc[i],...p}));
+let view='ht', zoom=1, fileName='halftone';
+
+const $ = id => document.getElementById(id);
+const canvas=$('view'), ctx=canvas.getContext('2d'), vp=$('viewport');
+const src=document.createElement('canvas'), sctx=src.getContext('2d',{willReadFrequently:true});
+let T=null, aW=0, aH=0, layers=null, toneDirty=true, dotsDirty=true;
+
+/* ---------- sample image ---------- */
+function makeSample(){
+  const w=800,h=1000; src.width=w; src.height=h;
+  const g=sctx.createLinearGradient(0,0,0,h); g.addColorStop(0,'#0c0c18'); g.addColorStop(.62,'#7a5f6a'); g.addColorStop(1,'#1a1a1e');
+  sctx.fillStyle=g; sctx.fillRect(0,0,w,h);
+  const sg=sctx.createRadialGradient(400,430,10,400,430,250); sg.addColorStop(0,'#fffbe8'); sg.addColorStop(.55,'#f2b48a'); sg.addColorStop(1,'#5a2a3a');
+  sctx.fillStyle=sg; sctx.beginPath(); sctx.arc(400,430,230,0,Math.PI*2); sctx.fill();
+  const ridge=(base,amp,seed,col)=>{sctx.fillStyle=col; sctx.beginPath(); sctx.moveTo(0,h);
+    for(let x=0;x<=w;x+=8){const y=base-amp*(Math.sin(x*.011+seed)*.6+Math.sin(x*.027+seed*2)*.3+Math.sin(x*.063+seed*3)*.1); sctx.lineTo(x,y);} sctx.lineTo(w,h); sctx.fill();};
+  ridge(700,110,1.3,'#4b4f63'); ridge(790,90,2.7,'#2a2b3a'); ridge(890,70,4.1,'#101012');
+  sctx.fillStyle='#ffffff'; sctx.font='900 96px "Big Shoulders Display", Impact, sans-serif'; sctx.textAlign='center'; sctx.fillText('SUNSET CLUB',400,150);
+  fileName='sample'; $('badge').hidden=false; $('badge').textContent='サンプル画像';
+  toneDirty=true; schedule();
+}
+
+/* ---------- loading ---------- */
+function loadBlob(blob,name){
+  if(!blob||!blob.type.startsWith('image/')){toast('画像ファイル（JPG・PNGなど）を選んでください。');return;}
+  const url=URL.createObjectURL(blob); const img=new Image();
+  img.onload=()=>{ const max=1400, k=Math.min(1,max/Math.max(img.width,img.height));
+    src.width=Math.round(img.width*k); src.height=Math.round(img.height*k);
+    sctx.clearRect(0,0,src.width,src.height); sctx.drawImage(img,0,0,src.width,src.height); URL.revokeObjectURL(url);
+    fileName=(name||'image').replace(/\.[^.]+$/,''); $('badge').hidden=true; toneDirty=true; schedule(); toast('読み込みました：'+(name||'貼り付け画像'));};
+  img.onerror=()=>toast('この画像は読み込めませんでした。別の形式で試してください。');
+  img.src=url;
+}
+$('file').addEventListener('change',e=>{const f=e.target.files[0]; if(f) loadBlob(f,f.name); e.target.value='';});
+['dragenter','dragover'].forEach(t=>vp.addEventListener(t,e=>{e.preventDefault();vp.classList.add('drag');}));
+['dragleave','drop'].forEach(t=>vp.addEventListener(t,e=>{e.preventDefault();vp.classList.remove('drag');}));
+vp.addEventListener('drop',e=>{const f=e.dataTransfer.files[0]; if(f) loadBlob(f,f.name);});
+window.addEventListener('paste',e=>{const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/')); if(it) loadBlob(it.getAsFile(),'貼り付け画像');});
+
+/* ---------- tone (luma / r / g / b) ---------- */
+function computeTone(){
+  aW=src.width; aH=src.height;
+  const tmp=document.createElement('canvas'); tmp.width=aW; tmp.height=aH; const t=tmp.getContext('2d',{willReadFrequently:true});
+  if(S.blur>0) t.filter=`blur(${S.blur*aW/1000}px)`;
+  t.drawImage(src,0,0);
+  const d=t.getImageData(0,0,aW,aH).data, N=aW*aH;
+  T={luma:new Float32Array(N),r:new Float32Array(N),g:new Float32Array(N),b:new Float32Array(N)};
+  const cf=Math.pow(2,S.contrast/50), br=S.brightness/200, gi=1/S.gamma, bp=S.blackPt/100, wp=Math.max(bp+.01,S.whitePt/100);
+  const adj=v=>{ if(S.invert) v=1-v; v=(v-.5)*cf+.5+br; v=v<0?0:v>1?1:v; v=Math.pow(v,gi); v=(v-bp)/(wp-bp); return v<0?0:v>1?1:v; };
+  for(let i=0,p=0;i<N;i++,p+=4){
+    const a=d[p+3]/255, r=d[p]/255, g=d[p+1]/255, b=d[p+2]/255;
+    T.luma[i]=adj(0.2126*r+0.7152*g+0.0722*b)*a; T.r[i]=adj(r)*a; T.g[i]=adj(g)*a; T.b[i]=adj(b)*a;
+  }
+  toneDirty=false; dotsDirty=true;
+}
+
+/* ---------- noise ---------- */
+function hash(i,j,s){let h=Math.imul(i|0,374761393)+Math.imul(j|0,668265263)+Math.imul(s|0,1442695041)|0;
+  h=Math.imul(h^(h>>>13),1274126177); h^=h>>>16; return (h>>>0)/4294967296;}
+function vnoise(x,y,s){const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hash(xi,yi,s),b=hash(xi+1,yi,s),c=hash(xi,yi+1,s),d=hash(xi+1,yi+1,s);return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;}
+function fbm(x,y,s){let t=0,amp=.5,f=1,n=0;for(let o=0;o<4;o++){t+=amp*vnoise(x*f,y*f,s+o*101);n+=amp;amp*=.5;f*=2.03;}return t/n;}
+const smooth=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+
+/* ---------- plates ---------- */
+function activePlates(){
+  if(!S.caOn) return [{color:'#ffffff',src:'luma',factor:0,angOff:0,idx:0}];
+  const out=[], F=[0,-1,1], A=[0,30,-30];
+  S.plates.forEach((p,i)=>{ if(p.on) out.push({color:S.caWhite?'#ffffff':p.color,src:p.src,factor:F[i],angOff:A[i],idx:i}); });
+  return out.length?out:[{color:'#ffffff',src:'luma',factor:0,angOff:0,idx:0}];
+}
+
+/* ---------- dots ---------- */
+function dims(){const W=+S.widthMm||280;return {W,H:W*aH/aW};}
+function computeLayer(P){
+  const {W,H}=dims(), cell=25.4/S.lpi, ang=(S.angle+P.angOff)*Math.PI/180, ca=Math.cos(ang), sa=Math.sin(ang);
+  const cx=W/2, cy=H/2, n=Math.ceil((Math.hypot(W,H)/2)/cell)+1, ppm=aW/W, arr=T[P.src];
+  const amt=S.distress/100, th=.75-amt*.5, dsc=S.dScale, st=S.stretch, grain=S.grain/100, drop=S.dropout/100, jit=S.jitter/100*cell, seed=S.seed|0;
+  const lseed=seed+P.idx*1009;
+  // chromatic offset (mm)
+  const ox=S.caOn?Math.cos(S.caDir*Math.PI/180)*S.caAmt*P.factor:0, oy=S.caOn?Math.sin(S.caDir*Math.PI/180)*S.caAmt*P.factor:0;
+  const radial=S.caOn&&S.caRadial&&P.factor!==0, rmax=Math.hypot(W,H)/2, rk=S.caAmt*P.factor/rmax;
+  // glitch
+  const gl=S.glOn, gs=(S.gSeed|0)+(S.gPerLayer?P.idx*977:0), gA=S.gAmt/100, gSh=S.gShift, gSl=Math.max(.5,S.gSlice), gB=S.gBlock/100, gSm=S.gSmear/100;
+  const scan=gl&&S.gScan>0, scP=S.gScanP, scG=S.gScan/100;
+  const xs=[],ys=[],ss=[]; const shape=S.shape, minD=S.minDot;
+  for(let i=-n;i<=n;i++){for(let j=-n;j<=n;j++){
+    const u=i*cell,v=j*cell; let x=cx+u*ca-v*sa, y=cy+u*sa+v*ca;
+    if(x<0||y<0||x>=W||y>=H) continue;
+    if(scan && ((y%scP)/scP)<scG) continue;
+    let sx=x-ox, sy=y-oy;
+    if(radial){ sx=x-(x-cx)*rk; sy=y-(y-cy)*rk; }
+    if(gl){
+      const b=Math.floor(y/gSl);
+      if(gA>0&&hash(b,1,gs)<gA) sx-=(hash(b,2,gs)-.5)*2*gSh;
+      if(gB>0){const bw=gSl*4,bi=Math.floor(x/bw),bj=Math.floor(y/gSl*.5);
+        if(hash(bi,bj,gs+5)<gB){sx+=(hash(bi,bj,gs+6)-.5)*2*gSh; sy+=(hash(bi,bj,gs+7)-.5)*gSl*2;}}
+      if(gSm>0&&hash(b,3,gs)<gSm){const x0=hash(b,4,gs)*W; if(sx>x0) sx=x0;}
+    }
+    if(sx<0||sy<0||sx>=W||sy>=H) continue;
+    let t=arr[Math.min(aH-1,(sy*ppm)|0)*aW+Math.min(aW-1,(sx*ppm)|0)];
+    if(t<=0.002) continue;
+    if(amt>0){const m=smooth(th-.05,th+.05,fbm(x/(dsc*st),y/dsc,seed)); t*=1-m;}
+    if(grain>0) t*=1-grain*hash(i,j,lseed+7);
+    if(drop>0&&hash(i,j,lseed+13)<drop) continue;
+    if(t<=0.002) continue;
+    let s;
+    if(shape==='circle'){ s = t<.785? cell*Math.sqrt(t/Math.PI) : cell*(.5+(t-.785)/.215*.2072); if(s*2<minD) continue; }
+    else if(shape==='line'){ s=cell*Math.min(1.02,t); if(s<minD) continue; }
+    else if(shape==='diamond'){ s=cell*Math.sqrt(t)*(1+.42*t*t); if(s<minD) continue; }
+    else { s=cell*Math.min(1.02,Math.sqrt(t)); if(s<minD) continue; }
+    if(jit>0){x+=(hash(i,j,lseed+17)-.5)*jit; y+=(hash(i,j,lseed+19)-.5)*jit;}
+    xs.push(x);ys.push(y);ss.push(s);
+  }}
+  return {xs,ys,ss,cell,ca,sa,color:P.color,src:P.src,idx:P.idx};
+}
+function computeDots(){ layers=activePlates().map(computeLayer); dotsDirty=false; }
+function corners(L,k,out){
+  const {xs,ys,ss,cell,ca,sa}=L, x=xs[k],y=ys[k],s=ss[k], shape=S.shape;
+  let hu,hv,c=ca,sn=sa;
+  if(shape==='line'){hu=cell*.505;hv=s/2;}
+  else if(shape==='diamond'){hu=hv=s/2;const r=Math.SQRT1_2;c=(ca-sa)*r;sn=(sa+ca)*r;}
+  else {hu=hv=s/2;}
+  out[0]=x+(-hu)*c-(-hv)*sn; out[1]=y+(-hu)*sn+(-hv)*c;
+  out[2]=x+( hu)*c-(-hv)*sn; out[3]=y+( hu)*sn+(-hv)*c;
+  out[4]=x+( hu)*c-( hv)*sn; out[5]=y+( hu)*sn+( hv)*c;
+  out[6]=x+(-hu)*c-( hv)*sn; out[7]=y+(-hu)*sn+( hv)*c;
+}
+/* draw order: colored plates first, the main (often white) plate last on top */
+const drawOrder=()=>[...layers].sort((a,b)=>(a.idx===0)-(b.idx===0));
+
+/* ---------- render ---------- */
+function render(){
+  if(toneDirty) computeTone();
+  if(dotsDirty) computeDots();
+  const {W,H}=dims();
+  const availW=Math.max(200,vp.clientWidth-48), availH=Math.max(260,Math.min(window.innerHeight*.78,900)-48);
+  const k=Math.min(availW/W,availH/H)*zoom, cw=W*k, ch=H*k;
+  const dpr=Math.min(window.devicePixelRatio||1,7000/Math.max(cw,ch));
+  canvas.style.width=cw+'px'; canvas.style.height=ch+'px'; canvas.width=Math.round(cw*dpr); canvas.height=Math.round(ch*dpr);
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height);
+  vp.style.setProperty('--shirt',S.shirt);
+  const light=S.shirt==='#e9e6df';
+  if(view==='src'){ctx.drawImage(src,0,0,canvas.width,canvas.height);}
+  else if(view==='gray'){
+    const id=new ImageData(aW,aH), A=T.luma, c=light?20:255; for(let i=0;i<A.length;i++){id.data[i*4]=id.data[i*4+1]=id.data[i*4+2]=c;id.data[i*4+3]=A[i]*255;}
+    const t=document.createElement('canvas');t.width=aW;t.height=aH;t.getContext('2d').putImageData(id,0,0);
+    ctx.imageSmoothingEnabled=true; ctx.drawImage(t,0,0,canvas.width,canvas.height);
+  } else {
+    const sc=k*dpr; ctx.setTransform(sc,0,0,sc,0,0); const c=new Float64Array(8);
+    for(const L of drawOrder()){
+      ctx.fillStyle=(light&&L.color.toLowerCase()==='#ffffff')?'#222222':L.color; ctx.beginPath();
+      const {xs,ys,ss}=L;
+      if(S.shape==='circle'){for(let i=0;i<xs.length;i++){ctx.moveTo(xs[i]+ss[i],ys[i]);ctx.arc(xs[i],ys[i],ss[i],0,6.2832);}}
+      else{for(let i=0;i<xs.length;i++){corners(L,i,c);ctx.moveTo(c[0],c[1]);ctx.lineTo(c[2],c[3]);ctx.lineTo(c[4],c[5]);ctx.lineTo(c[6],c[7]);ctx.closePath();}}
+      ctx.fill();
+    }
+  }
+  const cnt=layers.reduce((a,L)=>a+L.xs.length,0), bytes=cnt*(S.shape==='circle'?70:80)+800, mb=bytes/1048576;
+  const inks=plateGroups().map(g=>`<span><i class="ink" style="background:${g.color}"></i>${g.layers.reduce((a,L)=>a+L.xs.length,0).toLocaleString()}</span>`).join('');
+  $('stats').innerHTML=`<span>出力 <b>${W.toFixed(0)} × ${H.toFixed(0)} mm</b></span><span>線数 <b>${S.lpi} lpi</b>（間隔 ${(25.4/S.lpi).toFixed(2)} mm）</span><span>版 <b>${plateGroups().length}</b> 枚</span>${inks}<span class="${mb>15?'warn':''}">SVG 約 <b>${mb<1?(bytes/1024).toFixed(0)+' KB':mb.toFixed(1)+' MB'}</b>${mb>15?'（重いので線数を下げるのがおすすめ）':''}</span>`;
+  $('savePlates').hidden=plateGroups().length<2;
+}
+let raf=0; function schedule(){ if(!raf) raf=requestAnimationFrame(()=>{raf=0;render();}); }
+
+/* ---------- SVG ---------- */
+/* same ink color = same screen: layers with identical color merge into one plate */
+function plateGroups(){
+  const m=new Map(); for(const L of drawOrder()){const k=L.color.toLowerCase(); if(!m.has(k)) m.set(k,{color:k,layers:[]}); m.get(k).layers.push(L);}
+  return [...m.values()];
+}
+function buildSVG(groups){
+  if(toneDirty) computeTone(); if(dotsDirty) computeDots();
+  groups=groups||plateGroups();
+  const {W,H}=dims(), f=n=>Math.round(n*1000)/1000, parts=[], c=new Float64Array(8);
+  parts.push(`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${f(W)}mm" height="${f(H)}mm" viewBox="0 0 ${f(W)} ${f(H)}">\n`);
+  parts.push(`<!-- 網点: ${S.lpi}lpi / ${S.angle}deg / ${S.shape} / 最小網点 ${S.minDot}mm / 単位mm / 版${groups.length}枚 -->\n`);
+  groups.forEach((g,gi)=>{
+    parts.push(`<g id="plate-${gi+1}-${g.color.slice(1)}" fill="${g.color.toUpperCase()}" stroke="none">\n`);
+    for(const L of g.layers){
+      let d=''; const {xs,ys,ss}=L;
+      for(let i=0;i<xs.length;i++){
+        if(S.shape==='circle'){const r=f(ss[i]); d+=`M${f(xs[i]-ss[i])} ${f(ys[i])}a${r} ${r} 0 1 0 ${f(2*ss[i])} 0a${r} ${r} 0 1 0 ${f(-2*ss[i])} 0z`;}
+        else{corners(L,i,c); d+=`M${f(c[0])} ${f(c[1])}L${f(c[2])} ${f(c[3])}L${f(c[4])} ${f(c[5])}L${f(c[6])} ${f(c[7])}z`;}
+        if((i+1)%3000===0){parts.push(`<path d="${d}"/>\n`);d='';}
+      }
+      if(d) parts.push(`<path d="${d}"/>\n`);
+    }
+    parts.push('</g>\n');
+  });
+  parts.push('</svg>\n');
+  return new Blob(parts,{type:'image/svg+xml'});
+}
+/* save: claude.ai viewer uses the downloads capability; a normal browser uses a download link */
+let downloads=null, inViewer=!!window.claude?.use;
+(async()=>{ if(!inViewer) return; try{downloads=await window.claude.use('downloads');}catch(e){downloads=null;}
+  if(!downloads){$('save').disabled=true;$('savePlates').disabled=true;$('save').title='この表示では保存できません。コピーを使ってください。';}})();
+async function saveFile(name,blob){
+  if(downloads){ await downloads.save({filename:name,data:blob}); return; }
+  if(inViewer) throw {code:'unavailable'};
+  const url=URL.createObjectURL(blob), a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+const errMsg=e=>e?.code==='declined'?'保存をキャンセルしました。':e?.code==='rate_limited'?'保存の確認画面が開いています。少し待ってからもう一度押してください。':'保存できませんでした。「SVGをコピー」を試してください。';
+const baseName=()=>`${fileName}_halftone_${S.lpi}lpi`;
+$('save').addEventListener('click',async()=>{
+  toast('SVGを作成中…');
+  try{ await saveFile(baseName()+'.svg',buildSVG()); toast('保存しました。'); }catch(e){ toast(errMsg(e)); }
+});
+$('savePlates').addEventListener('click',async()=>{
+  const gs=plateGroups();
+  try{ for(let i=0;i<gs.length;i++){ toast(`版 ${i+1}/${gs.length} を作成中…`); await saveFile(`${baseName()}_plate${i+1}_${gs[i].color.slice(1)}.svg`,buildSVG([gs[i]])); }
+    toast(`${gs.length}枚の版を保存しました。`); }catch(e){ toast(errMsg(e)); }
+});
+$('copy').addEventListener('click',async()=>{
+  try{const text=await buildSVG().text(); await navigator.clipboard.writeText(text); toast('SVGをコピーしました。Illustratorなどに貼り付けられます。');}
+  catch(e){toast('コピーできませんでした。「SVGを保存」を使ってください。');}
+});
+
+/* ---------- controls ---------- */
+const fmt={brightness:v=>(v>0?'+':'')+v,contrast:v=>(v>0?'+':'')+v,gamma:v=>(+v).toFixed(2),blackPt:v=>v+'%',whitePt:v=>v+'%',blur:v=>v,
+  lpi:v=>v+' lpi',angle:v=>v+'°',minDot:v=>(+v).toFixed(2)+' mm',distress:v=>v+'%',dScale:v=>v+' mm',stretch:v=>'×'+v,grain:v=>v+'%',dropout:v=>v+'%',jitter:v=>v+'%',
+  caAmt:v=>(+v).toFixed(1)+' mm',caDir:v=>v+'°',
+  gAmt:v=>v+'%',gShift:v=>(+v).toFixed(1)+' mm',gSlice:v=>(+v).toFixed(1)+' mm',gBlock:v=>v+'%',gSmear:v=>v+'%',gScan:v=>v+'%',gScanP:v=>(+v).toFixed(1)+' mm'};
+const toneKeys=['brightness','contrast','gamma','blackPt','whitePt','blur'];
+const checks=['caOn','caRadial','caWhite','glOn','gPerLayer'];
+function save(){try{localStorage.setItem('ht-settings',JSON.stringify(S));}catch(e){}}
+function renderPlates(){
+  const box=$('plates'); box.innerHTML='';
+  S.plates.forEach((p,i)=>{
+    const row=document.createElement('div'); row.className='plate';
+    row.innerHTML=`<input type="checkbox" id="pl-on-${i}" aria-label="${PLATE_NAME[i]}を使う" ${p.on?'checked':''}>
+      <input type="color" id="pl-c-${i}" value="${p.color}" aria-label="${PLATE_NAME[i]}のインク色" ${S.caWhite?'disabled':''}>
+      <label class="nm" for="pl-s-${i}">${PLATE_NAME[i]}<small>${i===0?'ずれなし・一番上に刷る':'角度 '+(i===1?'+30°':'−30°')}</small></label>
+      <select id="pl-s-${i}">${Object.entries(SRC_LABEL).map(([k,l])=>`<option value="${k}" ${k===p.src?'selected':''}>${l}</option>`).join('')}</select>`;
+    box.appendChild(row);
+    row.querySelector(`#pl-on-${i}`).addEventListener('change',e=>{p.on=e.target.checked;if(!S.caOn){S.caOn=true;sync();}changed();});
+    row.querySelector(`#pl-c-${i}`).addEventListener('input',e=>{p.color=e.target.value;changed();});
+    row.querySelector(`#pl-s-${i}`).addEventListener('change',e=>{p.src=e.target.value;changed();});
+  });
+}
+function sync(){
+  for(const k in fmt){$(k).value=S[k];$('o-'+k).textContent=fmt[k](S[k]);}
+  checks.forEach(k=>$(k).checked=!!S[k]);
+  $('invert').checked=S.invert; $('widthMm').value=S.widthMm; $('seedlabel').textContent='#'+S.seed; $('gseedlabel').textContent='#'+S.gSeed;
+  $('g-ca').dataset.off=!S.caOn; $('g-gl').dataset.off=!S.glOn;
+  document.querySelectorAll('[data-shape]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.shape===S.shape));
+  document.querySelectorAll('[data-lpi]').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.lpi===+S.lpi));
+  document.querySelectorAll('[data-w]').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.w===+S.widthMm));
+  document.querySelectorAll('.swatch').forEach(b=>b.setAttribute('aria-pressed',b.dataset.c===S.shirt));
+  renderPlates();
+}
+function changed(tone){ if(tone) toneDirty=true; dotsDirty=true; save(); schedule(); }
+for(const k in fmt){$(k).addEventListener('input',e=>{S[k]=+e.target.value;$('o-'+k).textContent=fmt[k](S[k]);
+  if(k==='lpi') document.querySelectorAll('[data-lpi]').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.lpi===+S.lpi));
+  if(k.startsWith('ca')&&!S.caOn){S.caOn=true;sync();} if(/^g[A-Z]/.test(k)&&!S.glOn){S.glOn=true;sync();}
+  changed(toneKeys.includes(k));});}
+checks.forEach(k=>$(k).addEventListener('change',e=>{S[k]=e.target.checked;
+  if(e.target.checked&&(k==='caRadial'||k==='caWhite')) S.caOn=true; if(e.target.checked&&k==='gPerLayer') S.glOn=true; sync();changed();}));
+$('invert').addEventListener('change',e=>{S.invert=e.target.checked;changed(true);});
+$('widthMm').addEventListener('change',e=>{S.widthMm=Math.min(500,Math.max(20,+e.target.value||280));sync();changed();});
+document.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{S.shape=b.dataset.shape;sync();changed();}));
+document.querySelectorAll('[data-lpi]').forEach(b=>b.addEventListener('click',()=>{S.lpi=+b.dataset.lpi;sync();changed();}));
+document.querySelectorAll('[data-w]').forEach(b=>b.addEventListener('click',()=>{S.widthMm=+b.dataset.w;sync();changed();}));
+document.querySelectorAll('[data-ca]').forEach(b=>b.addEventListener('click',()=>{S.caOn=true;S.plates=PRESETS[b.dataset.ca].map(p=>({...p}));S.caWhite=b.dataset.ca==='white';sync();changed();}));
+$('reseed').addEventListener('click',()=>{S.seed=(S.seed*7919+13)%9973;sync();changed();});
+$('gReseed').addEventListener('click',()=>{S.gSeed=(S.gSeed*7919+29)%9973;sync();changed();});
+$('reset-tone').addEventListener('click',()=>{toneKeys.forEach(k=>S[k]=DEFAULTS[k]);S.invert=false;sync();changed(true);});
+$('reset-distress').addEventListener('click',()=>{['distress','dScale','stretch','grain','dropout','jitter'].forEach(k=>S[k]=DEFAULTS[k]);sync();changed();});
+const shirtsEl=$('shirts');
+SHIRTS.forEach(([c,name])=>{const b=document.createElement('button');b.type='button';b.className='swatch';b.dataset.c=c;b.style.background=c;b.title=name;b.setAttribute('aria-label',name);
+  b.addEventListener('click',()=>{S.shirt=c;sync();save();schedule();});shirtsEl.appendChild(b);});
+const setSeg=(ids,active)=>ids.forEach(id=>$(id).setAttribute('aria-pressed',id===active));
+[['v-ht','ht'],['v-gray','gray'],['v-src','src']].forEach(([id,v])=>$(id).addEventListener('click',()=>{view=v;setSeg(['v-ht','v-gray','v-src'],id);schedule();}));
+[['z1',1],['z2',2],['z4',4]].forEach(([id,z])=>$(id).addEventListener('click',()=>{zoom=z;setSeg(['z1','z2','z4'],id);schedule();}));
+let toastT=0; function toast(m){$('toast').textContent=m;clearTimeout(toastT);toastT=setTimeout(()=>$('toast').textContent='',5000);}
+window.addEventListener('resize',schedule);
+
+sync(); makeSample();
+document.fonts?.ready?.then(()=>{ if(fileName==='sample') makeSample(); });
+})();
+</script>
+
+</body>
+</html>
